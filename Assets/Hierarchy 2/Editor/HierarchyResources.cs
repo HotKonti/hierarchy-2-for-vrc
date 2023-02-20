@@ -7,7 +7,7 @@ using UnityEditor;
 namespace Hierarchy2
 {
     internal class HierarchyResources : ScriptableObject
-    {
+    { 
         Dictionary<string, Texture2D> dicIcons = new Dictionary<string, Texture2D>();
         public List<Texture2D> listIcons = new List<Texture2D>();
 
@@ -17,6 +17,13 @@ namespace Hierarchy2
             dicIcons = listIcons.ToDictionary(texture2D => texture2D.name);
         }
 
+        public Texture2D TryGetIcon(string key)
+        {
+            Texture2D texture2D = null;
+            dicIcons.TryGetValue(key, out texture2D);
+            return texture2D;
+        }
+        
         public Texture2D GetIcon(string key)
         {
             Texture2D texture2D = null;

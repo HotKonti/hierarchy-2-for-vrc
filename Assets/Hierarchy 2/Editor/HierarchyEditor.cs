@@ -1,8 +1,10 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Reflection;
+using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEditor.Experimental.SceneManagement;
@@ -13,6 +15,7 @@ using UnityEditor.IMGUI.Controls;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UIElements;
+using Component = UnityEngine.Component;
 
 namespace Hierarchy2
 {
@@ -33,6 +36,36 @@ namespace Hierarchy2
             }
             private set { instance = value; }
         }
+
+        private struct ComponentIconCache
+        {
+            public UnityEngine.Object component;
+            public Type componentType;
+            public Rect rect;
+            public bool objectActiveInHierarchy;
+            public ComponentIconType iconType;
+            
+            
+            public ComponentIconCache(UnityEngine.Object component, Type componentType, Rect rect,
+                bool objectActiveInHierarchy,
+                ComponentIconType iconType = ComponentIconType.NONE)
+            {
+                this.component = component;
+                this.componentType = componentType;
+                this.rect = rect;
+                this.objectActiveInHierarchy = objectActiveInHierarchy;
+                this.iconType = iconType;
+            }
+        }
+
+        private struct ComponentCache
+        {
+            public bool separator;
+            public float widthUsedCached;
+            public List<ComponentIconCache> comonentIconCache;
+        }
+        
+        Dictionary<int, ComponentCache> ComponentIconCaches = new Dictionary<int, ComponentCache>();
 
         Dictionary<int, UnityEngine.Object> selectedComponents = new Dictionary<int, UnityEngine.Object>();
         Dictionary<string, string> dicComponents = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -69,6 +102,9 @@ namespace Hierarchy2
         RowItem previousElement = null;
         WidthUse widthUse = WidthUse.zero;
 
+        Type vrcPhysBoneType = Type.GetType("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone, VRC.SDK3.Dynamics.PhysBone");
+        private Component[] physBones;
+        
         static HierarchyEditor()
         {
             if (instance == null)
@@ -246,6 +282,8 @@ namespace Hierarchy2
             PrefabStage.prefabStageClosing += OnPrefabStageClosing;
 
             EditorApplication.update += OnEditorUpdate;
+            
+            Undo.undoRedoPerformed += OnHierarchyChanged;
 
             selectionStyleAfterInvoke = false;
             EditorApplication.RepaintHierarchyWindow();
@@ -271,6 +309,7 @@ namespace Hierarchy2
 
             EditorApplication.update -= OnEditorUpdate;
 
+            Undo.undoRedoPerformed -= OnHierarchyChanged;
 
             foreach (EditorWindow window in GetAllSceneHierarchyWindowsDelegate())
             {
@@ -310,7 +349,7 @@ namespace Hierarchy2
                     if (!HierarchyWindow.instances.ContainsKey(window.GetInstanceID()))
                     {
                         var hierarchyWindow = new HierarchyWindow(window);
-                        hierarchyWindow.SetWindowTitle("Hierarchy 2");
+                        hierarchyWindow.SetWindowTitle("Hierarchy 2 VRC");
                     }
                 }
 
@@ -325,6 +364,7 @@ namespace Hierarchy2
 
         void OnModifierKeysChanged()
         {
+            
         }
 
         [DidReloadScripts]
@@ -365,7 +405,22 @@ namespace Hierarchy2
 
         void OnHierarchyChanged()
         {
+            var list = new List<Component>();
+
+            for (var i = 0; i < SceneManager.sceneCount; ++i)
+            {
+                var rootGameObjects = SceneManager.GetSceneAt(sceneIndex).GetRootGameObjects();
+            
+                foreach (var rootGameObject in rootGameObjects)
+                {
+                    list.AddRange(rootGameObject.GetComponentsInChildren(vrcPhysBoneType, true));
+                }
+            }
+
+            physBones = list.ToArray();
+            
             hierarchyChangedRequireUpdating = true;
+            ComponentIconCaches.Clear();
         }
 
         void OnPrefabUpdated(GameObject prefab)
@@ -819,7 +874,7 @@ namespace Hierarchy2
                 //ReplaceObjectIcon(rowItem.ID, icon);
             }
         }
-
+        
         void DisplayEditableIcon()
         {
             if (rowItem.gameObject.hideFlags == HideFlags.NotEditable)
@@ -894,131 +949,433 @@ namespace Hierarchy2
 
         void DisplayComponents()
         {
-            var components = rowItem.gameObject.GetComponents(typeof(Component)).ToList<UnityEngine.Object>();
-            var rendererComponent = rowItem.gameObject.GetComponent<Renderer>();
-            bool hasMaterial = rendererComponent != null && rendererComponent.sharedMaterial != null;
-
-            if (hasMaterial)
+            var enabledProperty = typeof(MonoBehaviour).GetProperty("enabled");
+            
+            if (ComponentIconCaches.ContainsKey(rowItem.ID))
             {
-                for (int i = 0; i < rendererComponent.sharedMaterials.Length; ++i)
+                var componentIconCach = ComponentIconCaches[rowItem.ID];
+                var separator = componentIconCach.separator;
+                
+                float widthUsedCached = componentIconCach.widthUsedCached;
+
+                if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
                 {
-                    Material sharedMat = rendererComponent.sharedMaterials[i];
-                    components.Add(sharedMat);
+                    widthUse.afterName += 4;
                 }
-            }
+                else
+                {
+                    widthUse.right += 2;
+                }
+                
+                Rect originRect;
+                if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
+                    originRect = RectFromLeft(rowItem.nameRect, settings.componentSize, ref widthUse.afterName);
+                else
+                    originRect = RectFromRight(rowItem.rect, settings.componentSize, ref widthUse.right);
 
-            int length = components.Count;
-            bool separator = false;
-            float widthUsedCached = 0;
-            if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
-            {
-                widthUsedCached = widthUse.afterName;
-                widthUse.afterName += 4;
+                Rect rect = Rect.zero;
+                foreach (var componentIconCache in componentIconCach.comonentIconCache)
+                {
+                    rect.position = componentIconCache.rect.position + originRect.position;
+                    rect.size = componentIconCache.rect.size + originRect.size;
+                    ComponentIcon(componentIconCache.component, componentIconCache.componentType, rect, componentIconCache.objectActiveInHierarchy, componentIconCache.iconType);
+                }
+                
+                if (separator && currentEvent.type == EventType.Repaint)
+                {
+                    if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
+                        GUISeparator(RectFromLeft(rowItem.nameRect, 2, widthUsedCached), ThemeData.colorGrid);
+                    // else
+                    //     GUISeparator(RectFromRight(element.rect, 2, widthUsedCached), ThemeData.colorGrid);
+                }
             }
             else
             {
-                widthUsedCached = widthUse.right;
-                widthUse.right += 2;
-            }
-
-            for (int i = 0; i < length; ++i)
-            {
-                var component = components[i];
-
-                try
+                var componentIconCach = new ComponentCache
                 {
-                    Type comType = component.GetType();
+                    comonentIconCache = new List<ComponentIconCache>()
+                };
 
-                    if (comType != null)
+                ComponentIconCaches[rowItem.ID] = componentIconCach;
+
+                var collidersField = vrcPhysBoneType?.GetField("colliders");
+                
+                var components = rowItem.gameObject.GetComponents(typeof(Component)).ToList<UnityEngine.Object>();
+                var rendererComponent = rowItem.gameObject.GetComponent<Renderer>();
+                bool hasMaterial = rendererComponent != null && rendererComponent.sharedMaterial != null;
+
+                bool objectActiveInHierarchy = rowItem.gameObject.activeInHierarchy;
+
+                if (hasMaterial)
+                {
+                    for (int i = 0; i < rendererComponent.sharedMaterials.Length; ++i)
                     {
-                        bool isMono = false;
-                        if (comType.BaseType == typeof(MonoBehaviour)) isMono = true;
-                        if (isMono)
+                        Material sharedMat = rendererComponent.sharedMaterials[i];
+                        components.Add(sharedMat);
+                    }
+                }
+
+                var length = components.Count;
+                var separator = false;
+                float widthUsedCached = 0;
+                if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
+                {
+                    widthUsedCached = widthUse.afterName;
+                    widthUse.afterName += 4;
+                }
+                else
+                {
+                    widthUsedCached = widthUse.right;
+                    widthUse.right += 2;
+                }
+
+                Rect originRect = Rect.zero;
+                Rect rect;
+
+                for (int i = 0; i < length; ++i)
+                {
+                    var component = components[i];
+                    
+                    var property = component.GetType().GetProperty("enabled");
+                    var componentEnabled = property == null || (bool)property.GetValue(component);
+
+                    try
+                    {
+                        var comType = component.GetType();
+
+                        if (comType != null)
                         {
-                            //TODO: ???
-                            bool shouldIgnoreThisMono = false;
-                            if (shouldIgnoreThisMono) continue;
-                        }
+                            var isMono = comType.BaseType == typeof(MonoBehaviour);
+                            if (isMono)
+                            {
+                                //TODO: ???
+                                bool shouldIgnoreThisMono = false;
+                                if (shouldIgnoreThisMono) continue;
+                            }
 
-                        switch (settings.componentDisplayMode)
+                            switch (settings.componentDisplayMode)
+                            {
+                                case HierarchySettings.ComponentDisplayMode.ScriptOnly:
+                                    if (!isMono)
+                                        continue;
+                                    break;
+
+                                case HierarchySettings.ComponentDisplayMode.Specified:
+                                    if (!dicComponents.ContainsKey(comType.Name))
+                                        continue;
+                                    break;
+
+                                case HierarchySettings.ComponentDisplayMode.Ignore:
+                                    if (dicComponents.ContainsKey(comType.Name))
+                                        continue;
+                                    break;
+                            }
+
+                            if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
+                                rect = RectFromLeft(rowItem.nameRect, settings.componentSize, ref widthUse.afterName);
+                            else
+                                rect = RectFromRight(rowItem.rect, settings.componentSize, ref widthUse.right);
+
+                            if (originRect == Rect.zero)
+                            {
+                                originRect = new Rect(rect);
+                            }
+                            
+                            if (hasMaterial && i == length - rendererComponent.sharedMaterials.Length &&
+                                settings.componentDisplayMode != HierarchySettings.ComponentDisplayMode.ScriptOnly)
+                            {
+                                for (int m = 0; m < rendererComponent.sharedMaterials.Length; ++m)
+                                {
+                                    var sharedMaterial = rendererComponent.sharedMaterials[m];
+
+                                    if (sharedMaterial == null) continue;
+
+                                    componentIconCach.comonentIconCache.Add(
+                                        new ComponentIconCache(sharedMaterial, comType, new Rect(rect.position - originRect.position, rect.size - originRect.size), objectActiveInHierarchy, ComponentIconType.MATERIAL));
+                                    ComponentIcon(sharedMaterial, comType, rect, objectActiveInHierarchy, ComponentIconType.MATERIAL);
+
+                                    if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
+                                        rect = RectFromLeft(rowItem.nameRect, settings.componentSize,
+                                            ref widthUse.afterName);
+                                    else
+                                        rect = RectFromRight(rowItem.rect, settings.componentSize, ref widthUse.right);
+                                }
+
+                                separator = true;
+                                break;
+                            }
+
+                            componentIconCach.comonentIconCache.Add(
+                                new ComponentIconCache(component, comType, new Rect(rect.position - originRect.position, rect.size - originRect.size), objectActiveInHierarchy));
+                            ComponentIcon(component, comType, rect, objectActiveInHierarchy);
+                            
+                            if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
+                                widthUse.afterName += settings.componentSpacing;
+                            else
+                                widthUse.right += settings.componentSpacing;
+
+                            separator = true;
+                        }
+                    }
+                    catch (System.Exception)
+                    {
+                        continue;
+                    }
+
+                    // if (rowItem.gameObject.name == "KaKontiV5 (5) x1")
+                    // {
+                    //     Animator test = component as Animator;
+                    //     if (test)
+                    //     {
+                    //         Debug.Log(test.GetBoneTransform(HumanBodyBones.Hips).GetHierarchyPath());
+                    //     }
+                    // }
+                    
+                    if (vrcPhysBoneType != null && component.GetType() == vrcPhysBoneType)
+                    {
+                        var colliders = collidersField.GetValue(component) as ICollection;
+                        foreach (var collider in colliders)
                         {
-                            case HierarchySettings.ComponentDisplayMode.ScriptOnly:
-                                if (!isMono)
-                                    continue;
-                                break;
-
-                            case HierarchySettings.ComponentDisplayMode.Specified:
-                                if (!dicComponents.ContainsKey(comType.Name))
-                                    continue;
-                                break;
-
-                            case HierarchySettings.ComponentDisplayMode.Ignore:
-                                if (dicComponents.ContainsKey(comType.Name))
-                                    continue;
-                                break;
+                            var colliderComponent = ((Component)collider);
+                            if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
+                                rect = RectFromLeft(rowItem.nameRect, settings.componentSize,
+                                    ref widthUse.afterName);
+                            else
+                                rect = RectFromRight(rowItem.rect, settings.componentSize, ref widthUse.right);
+ 
+                            componentIconCach.comonentIconCache.Add(
+                                new ComponentIconCache(colliderComponent, collider.GetType(), new Rect(rect.position - originRect.position, rect.size - originRect.size), colliderComponent.gameObject.activeInHierarchy, ComponentIconType.BONE_COLLIDER));
+                            ComponentIcon(colliderComponent, collider.GetType(), rect, colliderComponent.gameObject.activeInHierarchy, ComponentIconType.BONE_COLLIDER);
                         }
+                    }
+                }
+                
+                if (vrcPhysBoneType != null)
+                {
+                    var thisTransform = rowItem.gameObject.transform;
+                    var rootTransformField = vrcPhysBoneType.GetField("rootTransform");
+                    var physBonesRootTransforms = new List<Transform>(physBones.Length);
 
-                        Rect rect = Rect.zero;
+                    foreach (var physBone in physBones)
+                    {
+                        var rootTransform = rootTransformField.GetValue(physBone) as Transform;
+                        if (rootTransform == null) rootTransform = physBone.transform;
+                        physBonesRootTransforms.Add(rootTransform);
+                    }
 
+                    var thisRootTransformIndex = physBonesRootTransforms.IndexOf(thisTransform);
+                    if (thisRootTransformIndex != -1)
+                    {
+                        var physBone = physBones[thisRootTransformIndex];
+                        
+                        var componentObjectActiveInHierarchy = physBone.gameObject.activeInHierarchy;
+                        var componentEnabled = (bool)enabledProperty.GetValue(physBone);
+
+                        if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
+                            rect = RectFromLeft(rowItem.nameRect, settings.componentSize,
+                                ref widthUse.afterName);
+                        else
+                            rect = RectFromRight(rowItem.rect, settings.componentSize, ref widthUse.right);
+
+                        if (originRect == Rect.zero)
+                        {
+                            originRect = new Rect(rect);
+                        }
+                        
+                        componentIconCach.comonentIconCache.Add(
+                            new ComponentIconCache(physBone, vrcPhysBoneType, new Rect(rect.position - originRect.position, rect.size - originRect.size), componentObjectActiveInHierarchy, ComponentIconType.ROOT_BONE));
+                        ComponentIcon(physBone, vrcPhysBoneType, rect, componentObjectActiveInHierarchy, ComponentIconType.ROOT_BONE);
+                    }
+                    
+                    var ignoreTransformsField = vrcPhysBoneType.GetField("ignoreTransforms");
+                    var multiChildTypeField = vrcPhysBoneType.GetField("multiChildType");
+
+                    var rootTransformIndexes = new List<int>();
+                    for (var targetTransform = thisTransform; targetTransform.parent != null; targetTransform = targetTransform.parent)
+                    {
+                        var index = physBonesRootTransforms.IndexOf(targetTransform);
+                        if (index != -1)
+                        {
+                            rootTransformIndexes.Add(index);
+                        }
+                    }
+
+                    var isIgnores = new List<bool>(rootTransformIndexes.Count);
+                    for (int i = 0; i < rootTransformIndexes.Count; i++)
+                    {
+                        var rootTransformIndex = rootTransformIndexes[i];
+                        var rootTransform = physBonesRootTransforms[rootTransformIndex];
+                        var ignoreTransforms = ignoreTransformsField.GetValue(physBones[rootTransformIndex]) as List<Transform>;
+
+                        var isIgnore = false;
+                        for (var targetTransform = thisTransform;
+                            targetTransform.parent != null;
+                            targetTransform = targetTransform.parent)
+                        {
+                            if (targetTransform == rootTransform)
+                            {
+                                break;
+                            }
+                            
+                            if (ignoreTransforms.IndexOf(targetTransform) != -1)
+                            {
+                                isIgnore = true;
+                                break;
+                            }
+                        }
+                        isIgnores.Add(isIgnore);
+                    }
+                    
+                    for (int i = 0; i < rootTransformIndexes.Count; i++)
+                    {
+                        if (isIgnores[i])
+                        {
+                            continue;
+                        }
+                        
+                        var rootTransformIndex = rootTransformIndexes[i];
+                        var physBone = physBones[rootTransformIndex];
+                        var rootTransform = physBonesRootTransforms[rootTransformIndex];
+                        
+                        bool componentObjectActiveInHierarchy = physBone.gameObject.activeInHierarchy;
+                        
+                        var multiChildType = multiChildTypeField.GetValue(physBone).ToString();
+
+                        
                         if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
                             rect = RectFromLeft(rowItem.nameRect, settings.componentSize, ref widthUse.afterName);
                         else
                             rect = RectFromRight(rowItem.rect, settings.componentSize, ref widthUse.right);
-
-
-                        if (hasMaterial && i == length - rendererComponent.sharedMaterials.Length &&
-                            settings.componentDisplayMode != HierarchySettings.ComponentDisplayMode.ScriptOnly)
+                        
+                        if (originRect == Rect.zero)
                         {
-                            for (int m = 0; m < rendererComponent.sharedMaterials.Length; ++m)
-                            {
-                                var sharedMaterial = rendererComponent.sharedMaterials[m];
-
-                                if (sharedMaterial == null) continue;
-                                ComponentIcon(sharedMaterial, comType, rect, true);
-
-                                if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
-                                    rect = RectFromLeft(rowItem.nameRect, settings.componentSize,
-                                        ref widthUse.afterName);
-                                else
-                                    rect = RectFromRight(rowItem.rect, settings.componentSize, ref widthUse.right);
-                            }
-
-                            separator = true;
-                            break;
+                            originRect = new Rect(rect);
                         }
+                        
+                        switch (multiChildType)
+                        {
+                            case "Ignore":
+                                if (thisTransform != rootTransform)
+                                {
+                                    componentIconCach.comonentIconCache.Add(
+                                        new ComponentIconCache(physBone, vrcPhysBoneType, new Rect(rect.position - originRect.position, rect.size - originRect.size), componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_BONE));
+                                    ComponentIcon(physBone, vrcPhysBoneType, rect, componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_BONE);
+                                }
+                                break;
+                            case "First":
+                            {
+                                componentIconCach.comonentIconCache.Add(
+                                    new ComponentIconCache(physBone, vrcPhysBoneType, new Rect(rect.position - originRect.position, rect.size - originRect.size), componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_BONE));
+                                ComponentIcon(physBone, vrcPhysBoneType, rect, componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_BONE);
+                                break;
+                            }
+                            case "Average":
+                            {
+                                if (thisTransform == rootTransform)
+                                {
+                                    componentIconCach.comonentIconCache.Add(
+                                        new ComponentIconCache(physBone, vrcPhysBoneType, new Rect(rect.position - originRect.position, rect.size - originRect.size), componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_BONE));
+                                    ComponentIcon(physBone, vrcPhysBoneType, rect, componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_BONE);
+                                    break;
+                                }
 
-                        ComponentIcon(component, comType, rect);
-
-                        if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
-                            widthUse.afterName += settings.componentSpacing;
-                        else
-                            widthUse.right += settings.componentSpacing;
-
-                        separator = true;
+                                var ignoreTransforms = ignoreTransformsField.GetValue(physBones[rootTransformIndex]) as List<Transform>;
+                                
+                                var parentTransform = thisTransform.parent;
+                                
+                                int ignoreCount = 0;
+                                for (int j = 0; j < parentTransform.childCount; j++)
+                                {
+                                    if (ignoreTransforms.IndexOf(parentTransform.GetChild(j)) != -1)
+                                    {
+                                        ++ignoreCount;
+                                    }
+                                }
+                                
+                                if (thisTransform.parent.childCount - ignoreCount == 1)
+                                {
+                                    componentIconCach.comonentIconCache.Add(
+                                        new ComponentIconCache(physBone, vrcPhysBoneType, new Rect(rect.position - originRect.position, rect.size - originRect.size), componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_BONE));
+                                    ComponentIcon(physBone, vrcPhysBoneType, rect, componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_BONE);
+                                }
+                                else
+                                {
+                                    componentIconCach.comonentIconCache.Add(
+                                        new ComponentIconCache(physBone, vrcPhysBoneType, new Rect(rect.position - originRect.position, rect.size - originRect.size), componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_AVERAGE_BONE));
+                                    ComponentIcon(physBone, vrcPhysBoneType, rect, componentObjectActiveInHierarchy, ComponentIconType.PARTIAL_AVERAGE_BONE);
+                                }
+                                break;
+                            }
+                        }
                     }
                 }
-                catch (System.Exception)
-                {
-                    continue;
-                }
-            }
 
-            if (separator && currentEvent.type == EventType.Repaint)
-            {
-                if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
-                    GUISeparator(RectFromLeft(rowItem.nameRect, 2, widthUsedCached), ThemeData.colorGrid);
-                // else
-                //     GUISeparator(RectFromRight(element.rect, 2, widthUsedCached), ThemeData.colorGrid);
+                componentIconCach.separator = separator;
+                componentIconCach.widthUsedCached = widthUsedCached;
+
+                if (separator && currentEvent.type == EventType.Repaint)
+                {
+                    if (settings.componentAlignment == HierarchySettings.ElementAlignment.AfterName)
+                        GUISeparator(RectFromLeft(rowItem.nameRect, 2, widthUsedCached), ThemeData.colorGrid);
+                    // else
+                    //     GUISeparator(RectFromRight(element.rect, 2, widthUsedCached), ThemeData.colorGrid);
+                }
             }
         }
 
-        void ComponentIcon(UnityEngine.Object component, Type componentType, Rect rect, bool isMaterial = false)
+        
+        enum ComponentIconType
+        {
+            NONE,
+            MATERIAL,
+            ROOT_BONE,
+            PARTIAL_BONE,
+            PARTIAL_AVERAGE_BONE,
+            BONE_COLLIDER,
+        }
+        
+        void ComponentIcon(UnityEngine.Object component, Type componentType, Rect rect, bool objectActiveInHierarchy, ComponentIconType iconType = ComponentIconType.NONE)
         {
             int comHash = component.GetHashCode();
 
             if (currentEvent.type == EventType.Repaint)
             {
-                Texture image = EditorGUIUtility.ObjectContent(component, componentType).image;
+                Texture icon = resources.TryGetIcon(component.GetType().ToString());
+
+                switch (iconType)
+                {
+                    case ComponentIconType.ROOT_BONE:
+                        icon = resources.TryGetIcon("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone Root");
+                        break;
+                    case ComponentIconType.PARTIAL_BONE:
+                        icon = resources.TryGetIcon("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone Partial");
+                        break;
+                    case ComponentIconType.PARTIAL_AVERAGE_BONE:
+                        icon = resources.TryGetIcon("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone PartialAverage");
+                        break;
+                    case ComponentIconType.BONE_COLLIDER:
+                        icon = resources.TryGetIcon("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone Collider");
+                        break;
+                    default:
+                        icon = resources.TryGetIcon(component.GetType().ToString());
+                        break;
+                }
+                
+                // if (component.GetType().ToString() == "VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone")
+                // {
+                //     var rootTransform = component.GetType().GetField("rootTransform").GetValue(component);
+                //     
+                //     if (rootTransform == null || (Transform)rootTransform == (component as Component)?.transform) {
+                //         icon = resources.TryGetIcon("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBoneRoot");
+                //     } else {
+                //         icon = resources.TryGetIcon("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBonePartial");
+                //     }
+                // }
+                // else
+                // {
+                //     
+                // }
+                Texture image = icon ? icon : EditorGUIUtility.ObjectContent(component, componentType).image;
 
                 if (selectedComponents.ContainsKey(comHash))
                 {
@@ -1028,11 +1385,25 @@ namespace Hierarchy2
                     GUI.color = guiColor;
                 }
 
-                string tooltip = isMaterial ? component.name : componentType.Name;
+                string tooltip = iconType == ComponentIconType.MATERIAL ? component.name : componentType.Name;
                 tooltipContent.tooltip = tooltip;
                 GUI.Box(rect, tooltipContent, GUIStyle.none);
 
-                GUI.DrawTexture(rect, image, ScaleMode.ScaleToFit);
+                if (objectActiveInHierarchy)
+                {
+                    GUI.DrawTexture(rect, image, ScaleMode.ScaleToFit);
+                }
+                else
+                {
+                    GUI.DrawTexture(rect, image, ScaleMode.ScaleToFit, true, 0, new Color(1, 1, 1, 0.5f), Vector4.zero, Vector4.zero);
+                }
+                
+                var componentEnabled = component.GetType().GetProperty("enabled")
+                    ?.GetValue(component) as bool?;
+
+                if (!(componentEnabled == null || componentEnabled == true)) {
+                    GUI.DrawTexture(rect, resources.GetIcon("InactiveObject"), ScaleMode.ScaleToFit);
+                }
             }
 
 
