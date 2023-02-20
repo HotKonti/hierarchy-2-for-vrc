@@ -3,7 +3,11 @@ using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
+using System.Text;
+using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -13,6 +17,7 @@ using UnityEditor.Callbacks;
 using UnityEditor.UIElements;
 using UnityEditor.IMGUI.Controls;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.SceneManagement;
 using UnityEngine.UIElements;
 using Component = UnityEngine.Component;
@@ -22,6 +27,10 @@ namespace Hierarchy2
     [InitializeOnLoad]
     public sealed class HierarchyEditor
     {
+        internal const string VERSION = "v0.6.0";
+        private const string DOWNLOAD_URL = "https://github.com/hotkonti/hierarchy-2-for-vrc/releases";
+        private string newVersion = "";
+        
         internal const int GLOBAL_SPACE_OFFSET_LEFT = 16 * 2;
 
         static HierarchyEditor instance;
@@ -240,6 +249,61 @@ namespace Hierarchy2
                 Dispose();
 
             EditorApplication.update -= EditorAwake;
+            VersionCheck();
+        }
+        
+        public static int CompareVersions(string version1, string version2)
+        {
+            // Remove "v" prefix
+            version1 = version1.Replace("v", "");
+            version2 = version2.Replace("v", "");
+
+            // Split each version into parts separated by "."
+            string[] version1Parts = version1.Split('.');
+            string[] version2Parts = version2.Split('.');
+
+            // Throw an exception if the number of parts is different
+            if (version1Parts.Length != version2Parts.Length)
+            {
+                throw new ArgumentException("Versions have different number of parts");
+            }
+
+            // Compare each part of the versions
+            for (int i = 0; i < version1Parts.Length; i++)
+            {
+                int version1Part = int.Parse(version1Parts[i]);
+                int version2Part = int.Parse(version2Parts[i]);
+
+                if (version1Part > version2Part)
+                {
+                    return 1;
+                }
+                else if (version1Part < version2Part)
+                {
+                    return -1;
+                }
+            }
+
+            // All parts are equal
+            return 0;
+        }
+        
+        async void VersionCheck()
+        {
+            string url = "https://api.github.com/repos/hotkonti/hierarchy-2-for-vrc/releases";
+            HttpClient client = new HttpClient();
+            client.DefaultRequestHeaders.UserAgent.Add(new System.Net.Http.Headers.ProductInfoHeaderValue("Unity", "1.0"));
+            HttpResponseMessage response = await client.GetAsync(url);
+            string jsonString = await response.Content.ReadAsStringAsync();
+            JArray json = JArray.Parse(jsonString);
+            string tagName = (string)json[0]["tag_name"];
+            string htmlUrl = (string)json[0]["html_url"];
+
+            if (CompareVersions(VERSION, tagName) < 0)
+            {
+                newVersion = tagName;
+                Debug.Log("(Hierarchy 2 VRC) new version: " + htmlUrl);
+            }
         }
 
         void ImportPackageCompleted(string packageName)
@@ -282,7 +346,7 @@ namespace Hierarchy2
             PrefabStage.prefabStageClosing += OnPrefabStageClosing;
 
             EditorApplication.update += OnEditorUpdate;
-            
+
             Undo.undoRedoPerformed += OnHierarchyChanged;
 
             selectionStyleAfterInvoke = false;
@@ -446,6 +510,27 @@ namespace Hierarchy2
 
         void HierarchyOnGUI(int selectionID, Rect selectionRect)
         {
+            if (selectionRect.yMin == 0 && newVersion != "")
+            {
+                GUIStyle style = new GUIStyle(GUI.skin.button);
+                style.normal.textColor = Color.white;
+                style.normal.background = resources.TryGetIcon("button_orange");
+
+                Rect buttonRect = new Rect(selectionRect.xMax - 120, selectionRect.y, 120, selectionRect.height - 2);
+                
+                // Set the GUI depth to draw the button on top of other controls
+                int oldDepth = GUI.depth;
+                GUI.depth = 100;
+                
+                if (GUI.Button(buttonRect, "Download " + newVersion, style))
+                {
+                    Application.OpenURL(DOWNLOAD_URL);
+                    Event.current.Use();
+                }
+                
+                GUI.depth = oldDepth;
+            }
+            
             currentEvent = Event.current;
 
             if (currentEvent.type == EventType.KeyDown && currentEvent.keyCode == KeyCode.H && currentEvent.control)
