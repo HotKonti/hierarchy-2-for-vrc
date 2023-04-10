@@ -27,7 +27,7 @@ namespace Hierarchy2
     [InitializeOnLoad]
     public sealed class HierarchyEditor
     {
-        internal const string VERSION = "v0.6.0";
+        internal const string VERSION = "v0.6.1";
         private const string DOWNLOAD_URL = "https://github.com/hotkonti/hierarchy-2-for-vrc/releases";
         private string newVersion = "";
         
@@ -1235,7 +1235,7 @@ namespace Hierarchy2
                     }
                 }
                 
-                if (vrcPhysBoneType != null)
+                if (vrcPhysBoneType != null && physBones != null)
                 {
                     var thisTransform = rowItem.gameObject.transform;
                     var rootTransformField = vrcPhysBoneType.GetField("rootTransform");
