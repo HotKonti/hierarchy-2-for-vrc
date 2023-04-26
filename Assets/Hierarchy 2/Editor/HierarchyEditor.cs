@@ -27,7 +27,7 @@ namespace Hierarchy2
     [InitializeOnLoad]
     public sealed class HierarchyEditor
     {
-        internal const string VERSION = "v0.6.1";
+        internal const string VERSION = "v0.6.2";
         private const string DOWNLOAD_URL = "https://github.com/hotkonti/hierarchy-2-for-vrc/releases";
         private string newVersion = "";
         
@@ -125,6 +125,8 @@ namespace Hierarchy2
             InternalReflection();
             EditorApplication.update += EditorAwake;
             AssetDatabase.importPackageCompleted += ImportPackageCompleted;
+
+            OnHierarchyChanged();
         }
 
         static List<Type> InternalEditorType = new List<Type>();
@@ -1218,6 +1220,7 @@ namespace Hierarchy2
                     
                     if (vrcPhysBoneType != null && component.GetType() == vrcPhysBoneType)
                     {
+                        var objectActive = ((Component)component).gameObject.activeInHierarchy;
                         var colliders = collidersField.GetValue(component) as ICollection;
                         foreach (var collider in colliders)
                         {
@@ -1227,7 +1230,15 @@ namespace Hierarchy2
                                     ref widthUse.afterName);
                             else
                                 rect = RectFromRight(rowItem.rect, settings.componentSize, ref widthUse.right);
- 
+
+                            if (collider == null)
+                            {
+                                componentIconCach.comonentIconCache.Add(
+                                    new ComponentIconCache(colliderComponent, null, new Rect(rect.position - originRect.position, rect.size - originRect.size), objectActive, ComponentIconType.BONE_COLLIDER_NULL));
+                                ComponentIcon(colliderComponent, null, rect, objectActive, ComponentIconType.BONE_COLLIDER_NULL);
+                                continue;
+                            }
+                            
                             componentIconCach.comonentIconCache.Add(
                                 new ComponentIconCache(colliderComponent, collider.GetType(), new Rect(rect.position - originRect.position, rect.size - originRect.size), colliderComponent.gameObject.activeInHierarchy, ComponentIconType.BONE_COLLIDER));
                             ComponentIcon(colliderComponent, collider.GetType(), rect, colliderComponent.gameObject.activeInHierarchy, ComponentIconType.BONE_COLLIDER);
@@ -1417,15 +1428,20 @@ namespace Hierarchy2
             PARTIAL_BONE,
             PARTIAL_AVERAGE_BONE,
             BONE_COLLIDER,
+            BONE_COLLIDER_NULL,
         }
         
         void ComponentIcon(UnityEngine.Object component, Type componentType, Rect rect, bool objectActiveInHierarchy, ComponentIconType iconType = ComponentIconType.NONE)
         {
-            int comHash = component.GetHashCode();
+            int comHash = -1;
+            if (component)
+            {
+                comHash = component.GetHashCode();
+            }
 
             if (currentEvent.type == EventType.Repaint)
             {
-                Texture icon = resources.TryGetIcon(component.GetType().ToString());
+                Texture icon;
 
                 switch (iconType)
                 {
@@ -1440,6 +1456,9 @@ namespace Hierarchy2
                         break;
                     case ComponentIconType.BONE_COLLIDER:
                         icon = resources.TryGetIcon("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone Collider");
+                        break;
+                    case ComponentIconType.BONE_COLLIDER_NULL:
+                        icon = resources.TryGetIcon("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone Collider Null");
                         break;
                     default:
                         icon = resources.TryGetIcon(component.GetType().ToString());
@@ -1470,7 +1489,12 @@ namespace Hierarchy2
                     GUI.color = guiColor;
                 }
 
-                string tooltip = iconType == ComponentIconType.MATERIAL ? component.name : componentType.Name;
+                string tooltip = 
+                    iconType == ComponentIconType.MATERIAL ? 
+                    component.name :
+                    component == null ?
+                    "null" :
+                    componentType.Name;
                 tooltipContent.tooltip = tooltip;
                 GUI.Box(rect, tooltipContent, GUIStyle.none);
 
@@ -1483,7 +1507,7 @@ namespace Hierarchy2
                     GUI.DrawTexture(rect, image, ScaleMode.ScaleToFit, true, 0, new Color(1, 1, 1, 0.5f), Vector4.zero, Vector4.zero);
                 }
                 
-                var componentEnabled = component.GetType().GetProperty("enabled")
+                var componentEnabled = component?.GetType().GetProperty("enabled")
                     ?.GetValue(component) as bool?;
 
                 if (!(componentEnabled == null || componentEnabled == true)) {
